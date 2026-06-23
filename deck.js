@@ -259,10 +259,6 @@ class DjDeck extends HTMLElement {
     `;
   }
 
-  // ==========================================
-  // === РУЧНОЙ ЗАПУСК MIDI (ПО КЛИКУ ПАЛЬЦЕМ) ===
-  // ==========================================
-
   initWebMIDI() {
     const btn = this.shadowRoot.getElementById('midiConnectBtn');
     const log = this.shadowRoot.getElementById('midiConsoleLog');
@@ -309,10 +305,6 @@ class DjDeck extends HTMLElement {
       log.innerText = `DENIED: ${err.message || "Permission blocked by iOS"}`;
     });
   }
-
-  // ==========================================
-  // === ТРАНСПОРТ ===
-  // ==========================================
 
   togglePlay() {
     window.AppCore.initAudio(); if (window.AppCore.audioCtx.state === 'suspended') window.AppCore.audioCtx.resume();
@@ -780,25 +772,10 @@ class DjDeck extends HTMLElement {
     if (!this.gainNode) {
       this.gainNode = ctx.createGain();
       
-      const maxCh = ctx.destination.maxChannelCount;
-      ctx.destination.channelCount = maxCh;
+      // Жёстко забиваем 2 канала, чтобы iOS не пыталась раскидывать звук по Акаю
+      try { ctx.destination.channelCount = 2; } catch(e) {}
 
-      if (maxCh >= 4) {
-        const splitter = ctx.createChannelSplitter(2);
-        const merger = ctx.createChannelMerger(4);
-
-        this.gainNode.connect(splitter);
-
-        splitter.connect(merger, 0, 0); 
-        splitter.connect(merger, 0, 2); 
-
-        splitter.connect(merger, 1, 1); 
-        splitter.connect(merger, 1, 3); 
-
-        merger.connect(ctx.destination);
-      } else {
-        this.gainNode.connect(ctx.destination);
-      }
+      this.gainNode.connect(ctx.destination);
     }
 
     this.gainNode.gain.value = this.faderVolume;
