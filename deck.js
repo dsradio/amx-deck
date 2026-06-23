@@ -377,21 +377,39 @@ class DjDeck extends HTMLElement {
       return;
     }
 
-    // === 4. ДЖОГ (ЧИСТЫЙ ОТНОСИТЕЛЬНЫЙ ШАГ: CC 54 [0x36]) ===
+    // === 4. ДЖОГ (НАКОПИТЕЛЬ ИМПУЛЬСОВ В «ВЕДРО») ===
     if (status === 176 && id === 54) {
-      // 1..63 = вперед, 127..64 = назад (превращаем 127 в -1, 126 в -2...)
-      const delta = value <= 63 ? value : value - 128;
+      const delta = value <= 63 ? value : value - 128; // строго +1 или -1
+      
+      if (!this._jogBucket) this._jogBucket = 0;
+      this._jogBucket += delta;
 
-      if (delta !== 0 && this.buffer) {
+      if (!this._jogLooping && this.buffer) {
+        this._jogLooping = true;
         if (!this.isScrubbing) this.initScrubEngine('JOG');
 
-        clearTimeout(this.jogStopTimer);
-        this.jogStopTimer = setTimeout(() => {
-          this.releaseScrubEngine('JOG');
-        }, 80);
+        const frameTicker = () => {
+          if (Math.abs(this._jogBucket) > 0) {
+            const ticks = this._jogBucket;
+            this._jogBucket = 0; // опустошили ведро
 
-        this.executeScrubStep(delta * 0.0025); // 0.0025 — идеальная вязкость тяжелого Денона
+            // Скармливаем пачку импульсов за кадр в твой родной движок
+            this.executeScrubStep(ticks * 0.0035);
+            requestAnimationFrame(frameTicker);
+          } else {
+            this._jogLooping = false;
+            this.releaseScrubEngine('JOG');
+          }
+        };
+        requestAnimationFrame(frameTicker);
       }
+
+      // Безопасный сброс: если рука замерла на диске
+      clearTimeout(this.jogStopTimer);
+      this.jogStopTimer = setTimeout(() => {
+        this._jogBucket = 0;
+      }, 80);
+
       return;
     }
     // 5. КНОПКИ PITCH BEND (+ / -)
