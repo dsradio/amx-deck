@@ -58,9 +58,9 @@ class DjDeck extends HTMLElement {
 
     // === АППАРАТНЫЙ СТАТУС MIDI ===
     this.shiftPressed = false;
-    this.midiOutput = null;
+    this.midiOutput = null; 
     this.gainNode = null;
-    this.faderVolume = 1.0;// Наш "Рот" для отправки команд в пульт
+    this.faderVolume = 1.0; 
   }
 
   getLoopSizeStr(val) {
@@ -280,13 +280,11 @@ class DjDeck extends HTMLElement {
       
       let inCount = 0, outCount = 0;
 
-      // 1. Подключаем слушателей (ВХОД)
       for (const input of access.inputs.values()) {
         inCount++;
         input.onmidimessage = (e) => this.handleMIDIMessage(e);
       }
 
-      // 2. ЗАХВАТЫВАЕМ ПЕРЕДАТЧИК (ВЫХОД)
       for (const output of access.outputs.values()) {
         outCount++;
         this.midiOutput = output; 
@@ -294,11 +292,8 @@ class DjDeck extends HTMLElement {
 
       log.innerText = `OK! In:${inCount} Out:${outCount} | Sending Handshake...`;
 
-      // 3. ПИНАЕМ AKAI AMX (WAKE UP CALL)
       if (this.midiOutput) {
-        // Отправляем Note On (144) на кнопку Play (ID 10) со значением 127 (Включить диод!)
         this.midiOutput.send([144, 10, 127]); 
-        // И на кнопку Cue (ID 8)
         this.midiOutput.send([144, 8, 127]);  
       }
 
@@ -327,17 +322,17 @@ class DjDeck extends HTMLElement {
 
     if (this.isPlaying) { 
       this.pause(); playBtn.innerText = "▶||"; 
-      if(this.midiOutput) this.midiOutput.send([144, 10, 0]); // Гасим диод Play
+      if(this.midiOutput) this.midiOutput.send([144, 10, 0]); 
     } else { 
       this.jogScrubbed = false; this.play(); playBtn.innerText = "PAUSE"; 
-      if(this.midiOutput) this.midiOutput.send([144, 10, 127]); // Зажигаем диод Play
+      if(this.midiOutput) this.midiOutput.send([144, 10, 127]); 
     }
   }
 
   pressCue() {
     if (!this.buffer) return; window.AppCore.initAudio(); if (window.AppCore.audioCtx.state === 'suspended') window.AppCore.audioCtx.resume();
     const playBtn = this.shadowRoot.getElementById('playBtn');
-    if(this.midiOutput) this.midiOutput.send([144, 8, 127]); // Зажигаем диод Cue
+    if(this.midiOutput) this.midiOutput.send([144, 8, 127]); 
 
     if (this.isCdjStuttering) { this.stopCdjStutter(); this.cuePoint = this.pausedAt; this.jogScrubbed = false; this.updateDisplay(); return; }
     if (this.isPlaying) { this.pause(); this.pausedAt = this.cuePoint; this.jogScrubbed = false; this.updateDisplay(); playBtn.innerText = "▶||"; if(this.midiOutput) this.midiOutput.send([144, 10, 0]); } 
@@ -349,7 +344,7 @@ class DjDeck extends HTMLElement {
   }
 
   releaseCue() {
-    if(this.midiOutput) this.midiOutput.send([144, 8, 0]); // Гасим диод Cue
+    if(this.midiOutput) this.midiOutput.send([144, 8, 0]); 
     if (this.isStuttering) { 
       this.pause(); this.pausedAt = this.cuePoint; this.updateDisplay(); this.isStuttering = false; 
       this.shadowRoot.getElementById('playBtn').innerText = "▶||"; 
@@ -360,7 +355,7 @@ class DjDeck extends HTMLElement {
   handleMIDIMessage(event) {
     const [status, id, value] = event.data;
     const log = this.shadowRoot.getElementById('midiConsoleLog');
-    log.innerText = `IN: [${status}, ${id}, ${value}]`; // Печатаем любой входящий чих на экран!
+    log.innerText = `IN: [${status}, ${id}, ${value}]`; 
 
     if (id === 0) {
       if (status === 144 && value > 0) this.shiftPressed = true;
@@ -383,7 +378,9 @@ class DjDeck extends HTMLElement {
       this.pitch = Math.max(-maxP, Math.min(maxP, calcPitch));
       this.applyPlaybackRate(); this.updatePitchUI();
       if (!this.isPlaying) this.updateDisplay();
+      return;
     }
+
     if (status === 176 && id === 39) {
       this.faderVolume = value / 127;
       if (this.gainNode) {
@@ -661,7 +658,6 @@ class DjDeck extends HTMLElement {
       }
     };
 
-    // Привязка ручного дефибриллятора MIDI
     bindSnappy(midiConnectBtn, () => this.initWebMIDI());
 
     bindSnappy(wZoomOut, () => { this.pixelsPerSecond = Math.max(1.5, Math.min(400, this.pixelsPerSecond * 0.75)); this.updateDisplay(); });
@@ -721,10 +717,9 @@ class DjDeck extends HTMLElement {
         this.reverseBuffer = window.AppCore.audioCtx.createBuffer(this.buffer.numberOfChannels, this.buffer.length, this.buffer.sampleRate);
         for (let i = 0; i < this.buffer.numberOfChannels; i++) { const dest = this.reverseBuffer.getChannelData(i); const src = this.buffer.getChannelData(i); dest.set(src); dest.reverse(); }
         
-        // ТРЕК ЗАГРУЖЕН! ПОСЫЛАЕМ В АКАЙ СИГНАЛ ЖИЗНИ!
         if (this.midiOutput) {
-          this.midiOutput.send([144, 10, 1]); // Запуск моргания Play
-          this.midiOutput.send([144, 8, 127]); // Cue горит
+          this.midiOutput.send([144, 10, 1]); 
+          this.midiOutput.send([144, 8, 127]); 
         }
 
         if (this.keyStr === "---") {
@@ -785,28 +780,23 @@ class DjDeck extends HTMLElement {
     if (!this.gainNode) {
       this.gainNode = ctx.createGain();
       
-      // 1. Спрашиваем у iOS: "Сколько каналов в звуковой карте?" (Акай ответит: 4)
       const maxCh = ctx.destination.maxChannelCount;
       ctx.destination.channelCount = maxCh;
 
-      // 2. Если карта многоканальная — строим мост-клонатор:
       if (maxCh >= 4) {
         const splitter = ctx.createChannelSplitter(2);
         const merger = ctx.createChannelMerger(4);
 
         this.gainNode.connect(splitter);
 
-        // Клонируем ЛЕВЫЙ канал: в Тюльпан-Л (0) и в Наушник-Л (2)
-        splitter.connect(merger, 0, 0);
-        splitter.connect(merger, 0, 2);
+        splitter.connect(merger, 0, 0); 
+        splitter.connect(merger, 0, 2); 
 
-        // Клонируем ПРАВЫЙ канал: в Тюльпан-П (1) и в Наушник-П (3)
-        splitter.connect(merger, 1, 1);
-        splitter.connect(merger, 1, 3);
+        splitter.connect(merger, 1, 1); 
+        splitter.connect(merger, 1, 3); 
 
         merger.connect(ctx.destination);
       } else {
-        // Если Акай отсоединен (играем с динамика телефона) — обычное стерео:
         this.gainNode.connect(ctx.destination);
       }
     }
@@ -821,8 +811,7 @@ class DjDeck extends HTMLElement {
     this.applyPlaybackRate(); 
     this.updateDisplay(); 
   }
-this.gainNode.gain.value = this.faderVolume;
-this.source.connect(this.gainNode); this.applyLoop(); this.source.start(0, this.pausedAt); this.startTime = window.AppCore.audioCtx.currentTime - this.pausedAt; this.isPlaying = true; this.applyPlaybackRate(); this.updateDisplay(); }
+
   pause() { if (!this.isPlaying || !this.source) return; this.source.stop(); this.pausedAt = window.AppCore.audioCtx.currentTime - this.startTime; if (this.isLooping && this.pausedAt > this.loopOut) this.pausedAt = this.loopIn + (this.pausedAt - this.loopOut) % (this.loopOut - this.loopIn); this.isPlaying = false; cancelAnimationFrame(this.animationFrame); }
 }
 customElements.define('dj-deck', DjDeck);
