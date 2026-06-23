@@ -377,31 +377,20 @@ class DjDeck extends HTMLElement {
       return;
     }
 
-    // 4. ДЖОГ (14 БИТ ЭНКОДЕР: MSB=17, LSB=49)
-    if (status === 176 && (id === 17 || id === 49)) {
-      if (id === 17) this._jogMSB = value;
-      if (id === 49) this._jogLSB = value;
+    // === 4. ДЖОГ (ЧИСТЫЙ ОТНОСИТЕЛЬНЫЙ ШАГ: CC 54 [0x36]) ===
+    if (status === 176 && id === 54) {
+      // 1..63 = вперед, 127..64 = назад (превращаем 127 в -1, 126 в -2...)
+      const delta = value <= 63 ? value : value - 128;
 
-      if (this._jogMSB !== undefined && this._jogLSB !== undefined) {
-        const currentPos = (this._jogMSB << 7) | this._jogLSB;
+      if (delta !== 0 && this.buffer) {
+        if (!this.isScrubbing) this.initScrubEngine('JOG');
 
-        if (this._lastJogPos !== undefined && this.buffer) {
-          let delta = currentPos - this._lastJogPos;
-          if (delta < -8192) delta += 16384;
-          else if (delta > 8192) delta -= 16384;
+        clearTimeout(this.jogStopTimer);
+        this.jogStopTimer = setTimeout(() => {
+          this.releaseScrubEngine('JOG');
+        }, 80);
 
-          if (delta !== 0) {
-            if (!this.isScrubbing) this.initScrubEngine('JOG');
-
-            clearTimeout(this.jogStopTimer);
-            this.jogStopTimer = setTimeout(() => {
-              this.releaseScrubEngine('JOG');
-            }, 80);
-
-            this.executeScrubStep(delta * 0.002);
-          }
-        }
-        this._lastJogPos = currentPos;
+        this.executeScrubStep(delta * 0.0025); // 0.0025 — идеальная вязкость тяжелого Денона
       }
       return;
     }
