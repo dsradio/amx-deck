@@ -774,10 +774,53 @@ class DjDeck extends HTMLElement {
     bindSnappy(cueBtn, () => this.pressCue(), () => this.releaseCue());
   }
 
-  play() { if (this.isPlaying) return; this.source = window.AppCore.audioCtx.createBufferSource(); this.source.buffer = this.buffer; if ('preservesPitch' in this.source) this.source.preservesPitch = this.masterTempo; if (!this.gainNode) {
-  this.gainNode = window.AppCore.audioCtx.createGain();
-  this.gainNode.connect(window.AppCore.audioCtx.destination);
-}
+  play() { 
+    if (this.isPlaying) return; 
+    const ctx = window.AppCore.audioCtx;
+
+    this.source = ctx.createBufferSource(); 
+    this.source.buffer = this.buffer; 
+    if ('preservesPitch' in this.source) this.source.preservesPitch = this.masterTempo; 
+
+    if (!this.gainNode) {
+      this.gainNode = ctx.createGain();
+      
+      // 1. Спрашиваем у iOS: "Сколько каналов в звуковой карте?" (Акай ответит: 4)
+      const maxCh = ctx.destination.maxChannelCount;
+      ctx.destination.channelCount = maxCh;
+
+      // 2. Если карта многоканальная — строим мост-клонатор:
+      if (maxCh >= 4) {
+        const splitter = ctx.createChannelSplitter(2);
+        const merger = ctx.createChannelMerger(4);
+
+        this.gainNode.connect(splitter);
+
+        // Клонируем ЛЕВЫЙ канал: в Тюльпан-Л (0) и в Наушник-Л (2)
+        splitter.connect(merger, 0, 0);
+        splitter.connect(merger, 0, 2);
+
+        // Клонируем ПРАВЫЙ канал: в Тюльпан-П (1) и в Наушник-П (3)
+        splitter.connect(merger, 1, 1);
+        splitter.connect(merger, 1, 3);
+
+        merger.connect(ctx.destination);
+      } else {
+        // Если Акай отсоединен (играем с динамика телефона) — обычное стерео:
+        this.gainNode.connect(ctx.destination);
+      }
+    }
+
+    this.gainNode.gain.value = this.faderVolume;
+    this.source.connect(this.gainNode); 
+
+    this.applyLoop(); 
+    this.source.start(0, this.pausedAt); 
+    this.startTime = ctx.currentTime - this.pausedAt; 
+    this.isPlaying = true; 
+    this.applyPlaybackRate(); 
+    this.updateDisplay(); 
+  }
 this.gainNode.gain.value = this.faderVolume;
 this.source.connect(this.gainNode); this.applyLoop(); this.source.start(0, this.pausedAt); this.startTime = window.AppCore.audioCtx.currentTime - this.pausedAt; this.isPlaying = true; this.applyPlaybackRate(); this.updateDisplay(); }
   pause() { if (!this.isPlaying || !this.source) return; this.source.stop(); this.pausedAt = window.AppCore.audioCtx.currentTime - this.startTime; if (this.isLooping && this.pausedAt > this.loopOut) this.pausedAt = this.loopIn + (this.pausedAt - this.loopOut) % (this.loopOut - this.loopIn); this.isPlaying = false; cancelAnimationFrame(this.animationFrame); }
