@@ -58,7 +58,9 @@ class DjDeck extends HTMLElement {
 
     // === АППАРАТНЫЙ СТАТУС MIDI ===
     this.shiftPressed = false;
-    this.midiOutput = null; // Наш "Рот" для отправки команд в пульт
+    this.midiOutput = null;
+    this.gainNode = null;
+    this.faderVolume = 1.0;// Наш "Рот" для отправки команд в пульт
   }
 
   getLoopSizeStr(val) {
@@ -381,6 +383,13 @@ class DjDeck extends HTMLElement {
       this.pitch = Math.max(-maxP, Math.min(maxP, calcPitch));
       this.applyPlaybackRate(); this.updatePitchUI();
       if (!this.isPlaying) this.updateDisplay();
+    }
+    if (status === 176 && id === 39) {
+      this.faderVolume = value / 127;
+      if (this.gainNode) {
+        this.gainNode.gain.setValueAtTime(this.faderVolume, window.AppCore.audioCtx.currentTime);
+      }
+      return;
     }
   }
 
@@ -765,7 +774,12 @@ class DjDeck extends HTMLElement {
     bindSnappy(cueBtn, () => this.pressCue(), () => this.releaseCue());
   }
 
-  play() { if (this.isPlaying) return; this.source = window.AppCore.audioCtx.createBufferSource(); this.source.buffer = this.buffer; if ('preservesPitch' in this.source) this.source.preservesPitch = this.masterTempo; this.source.connect(window.AppCore.audioCtx.destination); this.applyLoop(); this.source.start(0, this.pausedAt); this.startTime = window.AppCore.audioCtx.currentTime - this.pausedAt; this.isPlaying = true; this.applyPlaybackRate(); this.updateDisplay(); }
+  play() { if (this.isPlaying) return; this.source = window.AppCore.audioCtx.createBufferSource(); this.source.buffer = this.buffer; if ('preservesPitch' in this.source) this.source.preservesPitch = this.masterTempo; if (!this.gainNode) {
+  this.gainNode = window.AppCore.audioCtx.createGain();
+  this.gainNode.connect(window.AppCore.audioCtx.destination);
+}
+this.gainNode.gain.value = this.faderVolume;
+this.source.connect(this.gainNode); this.applyLoop(); this.source.start(0, this.pausedAt); this.startTime = window.AppCore.audioCtx.currentTime - this.pausedAt; this.isPlaying = true; this.applyPlaybackRate(); this.updateDisplay(); }
   pause() { if (!this.isPlaying || !this.source) return; this.source.stop(); this.pausedAt = window.AppCore.audioCtx.currentTime - this.startTime; if (this.isLooping && this.pausedAt > this.loopOut) this.pausedAt = this.loopIn + (this.pausedAt - this.loopOut) % (this.loopOut - this.loopIn); this.isPlaying = false; cancelAnimationFrame(this.animationFrame); }
 }
 customElements.define('dj-deck', DjDeck);
