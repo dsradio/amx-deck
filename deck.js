@@ -473,41 +473,43 @@ class DjDeck extends HTMLElement {
       return;
     }
 
-    // === 4. ДЖОГ (ОТНОСИТЕЛЬНЫЙ ЭНКОДЕР: CC 54 [0x36]) ===
-    if (status === 176 && id === 54) {
-      const delta = value <= 63 ? value : value - 128;
-      if (delta === 0 || !this.buffer) return;
+    // === 4. ИСТИННЫЙ 14-БИТНЫЙ ОПТИЧЕСКИЙ ДЖОГ (CC 17 = MSB, CC 49 = LSB) ===
+    if (status === 176 && (id === 17 || id === 49)) {
+      if (id === 17) this._jogMSB = value;
+      if (id === 49) this._jogLSB = value;
 
-      const mode = this.jogModes[this.currentJogMode];
+      if (this._jogMSB !== undefined && this._jogLSB !== undefined) {
+        // Склеиваем координаты энкодера в чистую шкалу от 0 до 16383
+        const currJog = (this._jogMSB << 7) | this._jogLSB; 
 
-      if (this._isPlatterTouched) {
-        // --- РУКА НА МЕТАЛЛЕ СВЕРХУ ---
-        if (mode === 'VINYL') {
-          this.executeScrubStep(delta * 0.003); // Царапаем
-        } else if (mode === 'CDJ') {
-          if (this.isPlaying) {
-            this.nudgeMotor(delta * 0.02); // В игре — питч-бенд
-          } else {
-            this.executeScrubStep(delta * 0.0015); // На паузе — двигаем точку заикания
-            this.updateCdjStutter();
-          }
-        } else if (mode === 'CTRL') {
-          this.executeScrubStep(delta * 0.02); // Быстрый поиск х6
-        }
-      } else {
-        // --- КРУТИМ ЗА БОК (ПЛАСТИКОВОЕ КОЛЬЦО) ---
-        if (this.isPlaying) {
-          this.nudgeMotor(delta * 0.015); // Питч-бенд в игре
-        } else {
-          if (mode === 'VINYL' || mode === 'CDJ') {
-            this.executeScrubStep(delta * 0.003); // Тихая перемотка/царапание
-          } else if (mode === 'CTRL') {
-            this.executeScrubStep(delta * 0.0015); // Медленный, ювелирный поиск
+        if (this._lastJog !== undefined && this.buffer) {
+          let delta = currJog - this._lastJog;
+
+          // Математическое сшивание краев диска при переходе 16383 <-> 0
+          if (delta < -8192) delta += 16384;
+          else if (delta > 8192) delta -= 16384;
+
+          if (delta !== 0) {
+            // ВЫВОДИМ ТЕБЕ НА ЭКРАН ЧЕСТНУЮ ФИЗИКУ:
+            const log = this.shadowRoot.getElementById('midiConsoleLog');
+            log.innerText = `JOG АБСОЛЮТ: ${currJog} | ШАГ: ${delta > 0 ? '+' : ''}${delta}`;
+
+            // Пинаем наш новый Worklet-ресемплер (1 тик = 1.5 миллисекунды)
+            if (this.workletNode) {
+              this.workletNode.port.postMessage({ 
+                type: 'scrub', 
+                deltaSec: delta * 0.0015 
+              });
+            }
           }
         }
+        this._lastJog = currJog;
       }
       return;
     }
+
+    // Глушим пакетный мусор 54/55 каналов, чтобы он не слепил наш лог:
+    if (status === 176 && (id === 54 || id === 55)) return;
 
     // 5. КНОПКИ PITCH BEND (+ / -)
     if (isNoteOn && (id === 24 || id === 25 || id === 23)) {
