@@ -360,44 +360,51 @@ class DjDeck extends HTMLElement {
       return;
     }
 
-    // 3. ПИТЧ-ФЕЙДЕР (CC 176, ID: 40 [0x28])
-    if (status === 176 && id === 40) {
-      const maxP = this.pitchRanges[this.currentPitchRangeIdx];
-      // 0 наверху (минус), 127 внизу (плюс)
-      const factor = (value - 64) / 63; 
-      this.pitch = Math.max(-maxP, Math.min(maxP, factor * maxP));
-      this.applyPlaybackRate(); this.updatePitchUI();
-      if (!this.isPlaying) this.updateDisplay();
-      return;
-    }
+    // 3. ПИТЧ-ФЕЙДЕР (14 БИТ: MSB=8, LSB=40)
+    if (status === 176 && (id === 8 || id === 40)) {
+      if (id === 8)  this._pitchMSB = value;
+      if (id === 40) this._pitchLSB = value;
 
-    // 4. ДЖОГ (CC 176, Вперед = ID 54 [0x36], Назад = ID 17 [0x11])
-    if (status === 176 && (id === 54 || id === 17)) {
-      let delta = 0;
-
-      if (id === 54) {
-        // Крутим вперед (значения 1, 2, 3...)
-        delta = value <= 63 ? value : value - 128; 
-      } else if (id === 17) {
-        // Крутим назад (значения 127, 126...) -> превращаем 127 в -1
-        delta = value <= 63 ? -value : -(128 - value);
-      }
-
-      if (delta !== 0 && this.buffer) {
-        if (!this.isScrubbing) this.initScrubEngine('JOG');
+      if (this._pitchMSB !== undefined && this._pitchLSB !== undefined) {
+        const raw14 = (this._pitchMSB << 7) | this._pitchLSB;
+        const maxP = this.pitchRanges[this.currentPitchRangeIdx];
+        this.pitch = ((raw14 / 16383) * 2 - 1) * maxP;
         
-        // Мгновенный сброс скретча, когда рука остановила джог (80мс)
-        clearTimeout(this.jogStopTimer);
-        this.jogStopTimer = setTimeout(() => {
-          this.releaseScrubEngine('JOG');
-        }, 80);
-
-        // Масштаб под тяжелый физический блин LC6000
-        this.executeScrubStep(delta * 0.012);
+        this.applyPlaybackRate(); 
+        this.updatePitchUI();
+        if (!this.isPlaying) this.updateDisplay();
       }
       return;
     }
 
+    // 4. ДЖОГ (14 БИТ ЭНКОДЕР: MSB=17, LSB=49)
+    if (status === 176 && (id === 17 || id === 49)) {
+      if (id === 17) this._jogMSB = value;
+      if (id === 49) this._jogLSB = value;
+
+      if (this._jogMSB !== undefined && this._jogLSB !== undefined) {
+        const currentPos = (this._jogMSB << 7) | this._jogLSB;
+
+        if (this._lastJogPos !== undefined && this.buffer) {
+          let delta = currentPos - this._lastJogPos;
+          if (delta < -8192) delta += 16384;
+          else if (delta > 8192) delta -= 16384;
+
+          if (delta !== 0) {
+            if (!this.isScrubbing) this.initScrubEngine('JOG');
+
+            clearTimeout(this.jogStopTimer);
+            this.jogStopTimer = setTimeout(() => {
+              this.releaseScrubEngine('JOG');
+            }, 80);
+
+            this.executeScrubStep(delta * 0.002);
+          }
+        }
+        this._lastJogPos = currentPos;
+      }
+      return;
+    }
     // 5. КНОПКИ PITCH BEND (+ / -)
     // Мапим ID 24 на Минус, а ID 25 (и 23 на всякий случай) на Плюс
     if (isNoteOn && (id === 24 || id === 25 || id === 23)) {
