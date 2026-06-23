@@ -56,11 +56,11 @@ class DjDeck extends HTMLElement {
     this.wasPlayingBeforeScrub = false;
     this.bendTimeout = null;
 
-    // === АППАРАТНЫЙ СТАТУС MIDI ===
+    // === АППАРАТНЫЙ СТАТУС DENON LC6000 ===
     this.shiftPressed = false;
     this.midiOutput = null; 
     this.gainNode = null;
-    this.faderVolume = 1.0; 
+    this.jogStopTimer = null; 
   }
 
   getLoopSizeStr(val) {
@@ -89,7 +89,6 @@ class DjDeck extends HTMLElement {
         .top-bar label { cursor: pointer; }
         #fileInput { display: none; }
         
-        /* КНОПКА-ДЕФИБРИЛЛЯТОР MIDI */
         .midi-btn {
           background: #222; color: #ffaa00; border: 1px solid #ffaa00; 
           border-radius: 4px; font-size: 11px; font-weight: bold; padding: 4px 10px; cursor: pointer; touch-action: none;
@@ -98,7 +97,6 @@ class DjDeck extends HTMLElement {
         .midi-on { background: #008800 !important; color: #fff !important; border-color: #00ff00 !important; }
         .midi-err { background: #880000 !important; color: #fff !important; border-color: #ff0000 !important; }
 
-        /* КОНСОЛЬ ОТЛАДКИ НА ЭКРАНЕ */
         .debug-console {
           background: #0d0d11; color: #00ffcc; font-family: monospace; font-size: 10px; 
           padding: 3px 6px; border-radius: 2px; margin-bottom: 6px; border: 1px solid #1a1a24;
@@ -263,7 +261,7 @@ class DjDeck extends HTMLElement {
     const btn = this.shadowRoot.getElementById('midiConnectBtn');
     const log = this.shadowRoot.getElementById('midiConsoleLog');
 
-    log.innerText = "STATUS: Requesting MIDI Access...";
+    log.innerText = "STATUS: Requesting Denon LC6000 API...";
 
     if (!navigator.requestMIDIAccess) {
       btn.className = 'midi-btn midi-err'; btn.innerText = "NO API";
@@ -272,7 +270,7 @@ class DjDeck extends HTMLElement {
     }
 
     navigator.requestMIDIAccess({ sysex: false }).then(access => {
-      btn.className = 'midi-btn midi-on'; btn.innerText = "MIDI: ONLINE";
+      btn.className = 'midi-btn midi-on'; btn.innerText = "DENON: ONLINE";
       
       let inCount = 0, outCount = 0;
 
@@ -286,23 +284,23 @@ class DjDeck extends HTMLElement {
         this.midiOutput = output; 
       }
 
-      log.innerText = `OK! In:${inCount} Out:${outCount} | Sending Handshake...`;
+      log.innerText = `OK! Denon LC6000 Active (In:${inCount} Out:${outCount})`;
 
+      // Приветственный взмах диодами Denon (Play = ID 1, Cue = ID 2)
       if (this.midiOutput) {
-        this.midiOutput.send([144, 10, 127]); 
-        this.midiOutput.send([144, 8, 127]);  
+        this.midiOutput.send([144, 1, 127]); 
+        this.midiOutput.send([144, 2, 127]);  
       }
 
       access.onstatechange = (e) => {
         if (e.port.type === 'output' && e.port.state === 'connected') {
           this.midiOutput = e.port;
-          this.midiOutput.send([144, 10, 127]);
         }
       };
 
     }).catch(err => {
       btn.className = 'midi-btn midi-err'; btn.innerText = "REJECTED";
-      log.innerText = `DENIED: ${err.message || "Permission blocked by iOS"}`;
+      log.innerText = `DENIED: ${err.message || "Permission blocked"}`;
     });
   }
 
@@ -314,20 +312,20 @@ class DjDeck extends HTMLElement {
 
     if (this.isPlaying) { 
       this.pause(); playBtn.innerText = "▶||"; 
-      if(this.midiOutput) this.midiOutput.send([144, 10, 0]); 
+      if(this.midiOutput) this.midiOutput.send([144, 1, 0]); // Гасим Play на Деноне
     } else { 
       this.jogScrubbed = false; this.play(); playBtn.innerText = "PAUSE"; 
-      if(this.midiOutput) this.midiOutput.send([144, 10, 127]); 
+      if(this.midiOutput) this.midiOutput.send([144, 1, 127]); // Зажигаем Play на Деноне
     }
   }
 
   pressCue() {
     if (!this.buffer) return; window.AppCore.initAudio(); if (window.AppCore.audioCtx.state === 'suspended') window.AppCore.audioCtx.resume();
     const playBtn = this.shadowRoot.getElementById('playBtn');
-    if(this.midiOutput) this.midiOutput.send([144, 8, 127]); 
+    if(this.midiOutput) this.midiOutput.send([144, 2, 127]); // Зажигаем Cue на Деноне
 
     if (this.isCdjStuttering) { this.stopCdjStutter(); this.cuePoint = this.pausedAt; this.jogScrubbed = false; this.updateDisplay(); return; }
-    if (this.isPlaying) { this.pause(); this.pausedAt = this.cuePoint; this.jogScrubbed = false; this.updateDisplay(); playBtn.innerText = "▶||"; if(this.midiOutput) this.midiOutput.send([144, 10, 0]); } 
+    if (this.isPlaying) { this.pause(); this.pausedAt = this.cuePoint; this.jogScrubbed = false; this.updateDisplay(); playBtn.innerText = "▶||"; if(this.midiOutput) this.midiOutput.send([144, 1, 0]); } 
     else {
       if (this.pausedAt === 0) { this.cuePoint = 0; this.jogScrubbed = false; } 
       else { this.pausedAt = (this.jogScrubbed ? (this.cuePoint = this.pausedAt) : this.cuePoint); }
@@ -336,11 +334,11 @@ class DjDeck extends HTMLElement {
   }
 
   releaseCue() {
-    if(this.midiOutput) this.midiOutput.send([144, 8, 0]); 
+    if(this.midiOutput) this.midiOutput.send([144, 2, 0]); // Гасим Cue на Деноне
     if (this.isStuttering) { 
       this.pause(); this.pausedAt = this.cuePoint; this.updateDisplay(); this.isStuttering = false; 
       this.shadowRoot.getElementById('playBtn').innerText = "▶||"; 
-      if(this.midiOutput) this.midiOutput.send([144, 10, 0]);
+      if(this.midiOutput) this.midiOutput.send([144, 1, 0]);
     }
   }
 
@@ -349,35 +347,66 @@ class DjDeck extends HTMLElement {
     const log = this.shadowRoot.getElementById('midiConsoleLog');
     log.innerText = `IN: [${status}, ${id}, ${value}]`; 
 
-    if (id === 0) {
-      if (status === 144 && value > 0) this.shiftPressed = true;
-      if (status === 128 || value === 0) this.shiftPressed = false;
+    const isNoteOn = (status === 144 && value > 0);
+    const isNoteOff = (status === 128 || (status === 144 && value === 0));
+
+    // 1. ПЛЕЙ (ID: 1)
+    if (id === 1 && isNoteOn) { this.togglePlay(); return; }
+
+    // 2. КЬЮ (ID: 2)
+    if (id === 2) {
+      if (isNoteOn) this.pressCue();
+      if (isNoteOff) this.releaseCue();
       return;
     }
 
-    if (id === 10 && status === 144 && value > 0) { this.togglePlay(); return; }
-    if (id === 8) {
-      if (status === 144 && value > 0) this.pressCue();
-      if (status === 128 || value === 0) this.releaseCue();
-      return;
-    }
-
-    if (status === 176 && id === 60 && this.shiftPressed) {
+    // 3. ПИТЧ-ФЕЙДЕР (CC 176, ID: 40 [0x28])
+    if (status === 176 && id === 40) {
       const maxP = this.pitchRanges[this.currentPitchRangeIdx];
+      // 0 наверху (минус), 127 внизу (плюс)
       const factor = (value - 64) / 63; 
-      let calcPitch = factor * maxP;
-      if (value >= 61 && value <= 67) calcPitch = 0.0;
-      this.pitch = Math.max(-maxP, Math.min(maxP, calcPitch));
+      this.pitch = Math.max(-maxP, Math.min(maxP, factor * maxP));
       this.applyPlaybackRate(); this.updatePitchUI();
       if (!this.isPlaying) this.updateDisplay();
       return;
     }
 
-    if (status === 176 && id === 39) {
-      this.faderVolume = value / 127;
-      if (this.gainNode) {
-        this.gainNode.gain.setValueAtTime(this.faderVolume, window.AppCore.audioCtx.currentTime);
+    // 4. ДЖОГ (CC 176, Вперед = ID 54 [0x36], Назад = ID 17 [0x11])
+    if (status === 176 && (id === 54 || id === 17)) {
+      let delta = 0;
+
+      if (id === 54) {
+        // Крутим вперед (значения 1, 2, 3...)
+        delta = value <= 63 ? value : value - 128; 
+      } else if (id === 17) {
+        // Крутим назад (значения 127, 126...) -> превращаем 127 в -1
+        delta = value <= 63 ? -value : -(128 - value);
       }
+
+      if (delta !== 0 && this.buffer) {
+        if (!this.isScrubbing) this.initScrubEngine('JOG');
+        
+        // Мгновенный сброс скретча, когда рука остановила джог (80мс)
+        clearTimeout(this.jogStopTimer);
+        this.jogStopTimer = setTimeout(() => {
+          this.releaseScrubEngine('JOG');
+        }, 80);
+
+        // Масштаб под тяжелый физический блин LC6000
+        this.executeScrubStep(delta * 0.012);
+      }
+      return;
+    }
+
+    // 5. КНОПКИ PITCH BEND (+ / -)
+    // Мапим ID 24 на Минус, а ID 25 (и 23 на всякий случай) на Плюс
+    if (isNoteOn && (id === 24 || id === 25 || id === 23)) {
+      const bend = (id === 24) ? -0.04 : 0.04;
+      this.applyPlaybackRate(bend);
+      return;
+    }
+    if (isNoteOff && (id === 24 || id === 25 || id === 23)) {
+      this.applyPlaybackRate(0);
       return;
     }
   }
@@ -710,8 +739,8 @@ class DjDeck extends HTMLElement {
         for (let i = 0; i < this.buffer.numberOfChannels; i++) { const dest = this.reverseBuffer.getChannelData(i); const src = this.buffer.getChannelData(i); dest.set(src); dest.reverse(); }
         
         if (this.midiOutput) {
-          this.midiOutput.send([144, 10, 1]); 
-          this.midiOutput.send([144, 8, 127]); 
+          this.midiOutput.send([144, 1, 127]); // Зажигаем Play на Деноне
+          this.midiOutput.send([144, 2, 127]); // Зажигаем Cue на Деноне
         }
 
         if (this.keyStr === "---") {
@@ -771,14 +800,11 @@ class DjDeck extends HTMLElement {
 
     if (!this.gainNode) {
       this.gainNode = ctx.createGain();
-      
-      // Жёстко забиваем 2 канала, чтобы iOS не пыталась раскидывать звук по Акаю
-      try { ctx.destination.channelCount = 2; } catch(e) {}
-
-      this.gainNode.connect(ctx.destination);
+      // Вывод прямо в системный стерео-выход Айфона
+      this.gainNode.connect(ctx.destination); 
     }
 
-    this.gainNode.gain.value = this.faderVolume;
+    this.gainNode.gain.value = 1.0; 
     this.source.connect(this.gainNode); 
 
     this.applyLoop(); 
