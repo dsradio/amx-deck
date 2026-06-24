@@ -61,7 +61,7 @@ class DjDeck extends HTMLElement {
     this.midiOutput = null; 
     this.gainNode = null;
     this.jogStopTimer = null; 
-    this.isPlatterTouched = false; // Флаг физического прижима тарелки сверху
+    this.isPlatterTouched = false; 
   }
 
   getLoopSizeStr(val) {
@@ -307,7 +307,11 @@ class DjDeck extends HTMLElement {
   togglePlay() {
     window.AppCore.initAudio(); if (window.AppCore.audioCtx.state === 'suspended') window.AppCore.audioCtx.resume();
     if (!this.buffer) return; 
-    this.stopCdjStutter();
+    
+    if (this.isCdjStuttering) {
+      this.stopCdjStutter();
+    }
+
     const playBtn = this.shadowRoot.getElementById('playBtn');
 
     if (this.isPlaying) { 
@@ -324,7 +328,15 @@ class DjDeck extends HTMLElement {
     const playBtn = this.shadowRoot.getElementById('playBtn');
     if(this.midiOutput) this.midiOutput.send([144, 2, 127]); 
 
-    if (this.isCdjStuttering) { this.stopCdjStutter(); this.cuePoint = this.pausedAt; this.jogScrubbed = false; this.updateDisplay(); return; }
+    // === ЛОГИКА CDJ: УБИТЬ ЗАИКАНИЕ И ВБИТЬ МЕТКУ ===
+    if (this.isCdjStuttering) { 
+      this.stopCdjStutter(); 
+      this.cuePoint = this.pausedAt; 
+      this.jogScrubbed = false; 
+      this.updateDisplay(); 
+      return; 
+    }
+
     if (this.isPlaying) { this.pause(); this.pausedAt = this.cuePoint; this.jogScrubbed = false; this.updateDisplay(); playBtn.innerText = "▶||"; if(this.midiOutput) this.midiOutput.send([144, 1, 0]); } 
     else {
       if (this.pausedAt === 0) { this.cuePoint = 0; this.jogScrubbed = false; } 
@@ -346,7 +358,6 @@ class DjDeck extends HTMLElement {
     const [status, id, value] = event.data;
 
     // === АНТИ-СПАМ ЩИТ ===
-    // Полностью вырезаем из лога абсолютные координаты (17, 49) и вектор (55), чтобы не вешать UI Айфона
     if (status === 176 && (id === 17 || id === 49 || id === 55)) return;
 
     const log = this.shadowRoot.getElementById('midiConsoleLog');
@@ -355,40 +366,46 @@ class DjDeck extends HTMLElement {
     const isNoteOn = (status === 144 && value > 0);
     const isNoteOff = (status === 128 || (status === 144 && value === 0));
 
-    // 1. ПЛЕЙ (ID: 1)
     if (id === 1 && isNoteOn) { this.togglePlay(); return; }
-
-    // 2. КЬЮ (ID: 2)
     if (id === 2) {
       if (isNoteOn) this.pressCue();
       if (isNoteOff) this.releaseCue();
       return;
     }
 
-    // === 3. ВЕРХНЯЯ ТАРЕЛКА ДЖОГА (Нота №40 [0x28]) ===
+    // === ПРИЖИМ ТАРЕЛКИ ДЖОГА ===
     if (id === 40 && (status === 144 || status === 128)) {
+      const mode = this.jogModes[this.currentJogMode];
       if (isNoteOn) {
         this.isPlatterTouched = true;
-        log.innerText = `💿 ДЖОГ: ПРИЖАТ (Режим Винил/Луп)`;
+        if (mode === 'VINYL' && this.isPlaying) {
+          this.wasPlayingBeforeScrub = true;
+          this.pause(); // В виниле глушим мотор
+        } else if (mode === 'CDJ' && !this.isPlaying && !this.isCdjStuttering) {
+          this.startCdjStutter(); // В CDJ стартуем заикание
+        }
       } else if (isNoteOff) {
         this.isPlatterTouched = false;
-        log.innerText = `💿 ДЖОГ: ОТПУЩЕН`;
+        if (mode === 'VINYL' && this.wasPlayingBeforeScrub) {
+          this.play(); // В виниле поехали дальше
+          this.wasPlayingBeforeScrub = false;
+        }
+        // В CDJ отпускание тарелки НЕ убивает заикание (ТЗ выполнено)
       }
       return;
     }
 
-    // === 4. СНАЙПЕРСКИЙ ПИТЧ-ФЕЙДЕР (14 БИТ: MSB=8, LSB=40) ===
+    // === 14-БИТНЫЙ ПИТЧ-ФЕЙДЕР ===
     if (status === 176 && id === 8) {
-      this._pitchMSB = value; // Тихо запомнили старший байт
+      this._pitchMSB = value; 
       return;
     }
 
     if (status === 176 && id === 40) {
       const msb = this._pitchMSB !== undefined ? this._pitchMSB : 64;
-      const raw14 = (msb << 7) | value; // Склеили честные 0...16383
+      const raw14 = (msb << 7) | value; 
 
       const maxP = this.pitchRanges[this.currentPitchRangeIdx];
-      // Масштабируем 0..16383 строго в диапазон от -1.0 (верх) до +1.0 (низ)
       const factor = ((raw14 / 16383) * 2) - 1; 
 
       this.pitch = factor * maxP;
@@ -398,12 +415,11 @@ class DjDeck extends HTMLElement {
       return;
     }
 
-    // === 5. ДЖОГ: ЧИСТАЯ ДЕЛЬТА ВРАЩЕНИЯ (CC 54 [0x36]) ===
+    // === ДЖОГ ДЕЛЬТА ===
     if (status === 176 && id === 54) {
-      // Конвертируем 7-битный Two's Complement: 1..63 = вперед, 64..127 = назад (-64..-1)
-      const delta = value <= 63 ? value : value - 128;
+      const rawDelta = value <= 63 ? value : value - 128;
 
-      if (delta !== 0 && this.buffer) {
+      if (rawDelta !== 0 && this.buffer) {
         if (!this.isScrubbing) this.initScrubEngine('JOG');
 
         clearTimeout(this.jogStopTimer);
@@ -411,13 +427,11 @@ class DjDeck extends HTMLElement {
           this.releaseScrubEngine('JOG');
         }, 80);
 
-        // Физическая редукция: 1 импульс лазера = 0.0005 сек сдвига кадра
-        this.executeScrubStep(delta * 0.0005); 
+        this.executeScrubStep(rawDelta); 
       }
       return;
     }
 
-    // 6. КНОПКИ PITCH BEND (+ / -)
     if (isNoteOn && (id === 24 || id === 25 || id === 23)) {
       const bend = (id === 24) ? -0.04 : 0.04;
       this.applyPlaybackRate(bend);
@@ -426,6 +440,162 @@ class DjDeck extends HTMLElement {
     if (isNoteOff && (id === 24 || id === 25 || id === 23)) {
       this.applyPlaybackRate(0);
       return;
+    }
+  }
+
+  executeScrubStep(rawDelta) {
+    if (!this.isScrubbing) return;
+    const now = Date.now(); const dt = Math.max(0.005, (now - this.lastScrubTime) / 1000); this.lastScrubTime = now; 
+    const mode = this.jogModes[this.currentJogMode];
+
+    // ==========================================
+    // СЦЕНАРИЙ А: ТРЕК ИГРАЕТ (Pitch Bend)
+    // ==========================================
+    if (this.isPlaying) {
+      let bendAmt = 0;
+      
+      if (mode === 'VINYL') {
+        // Мы здесь только если крутят бок (верх нажимал бы паузу)
+        bendAmt = rawDelta * 0.015; 
+      } else if (mode === 'CDJ') {
+        bendAmt = this.isPlatterTouched ? (rawDelta * 0.035) : (rawDelta * 0.010);
+      } else if (mode === 'CTRL') {
+        bendAmt = rawDelta * 0.025;
+      }
+
+      const clampedBend = Math.max(-0.35, Math.min(0.35, bendAmt));
+      this.applyPlaybackRate(clampedBend);
+
+      clearTimeout(this.bendTimeout);
+      this.bendTimeout = setTimeout(() => {
+        if (this.isPlaying) this.applyPlaybackRate(0);
+      }, 90);
+      return;
+    }
+
+    // ==========================================
+    // СЦЕНАРИЙ Б: ТРЕК НА ПАУЗЕ (Скретч / CDJ / Поиск)
+    // ==========================================
+    let timeShiftSec = 0;
+
+    if (mode === 'VINYL') {
+      timeShiftSec = rawDelta * 0.0005; 
+    } else if (mode === 'CDJ') {
+      timeShiftSec = rawDelta * 0.0004; 
+    } else if (mode === 'CTRL') {
+      timeShiftSec = this.isPlatterTouched ? (rawDelta * 0.015) : (rawDelta * 0.001);
+    }
+
+    this.pausedAt = this.pausedAt + timeShiftSec;
+
+    // === АУДИО-ГИЛЬОТИНА (УБИВАЕТ ФАНТОМНЫЙ СЭМПЛ В НАЧАЛЕ) ===
+    if (this.pausedAt <= 0) {
+      this.pausedAt = 0;
+      if (this.scratchGain) {
+        const aNow = window.AppCore.audioCtx.currentTime;
+        this.scratchGain.gain.cancelScheduledValues(aNow);
+        this.scratchGain.gain.setValueAtTime(0, aNow);
+      }
+      if (this.scratchSource) {
+        try { this.scratchSource.stop(); this.scratchSource.disconnect(); } catch(e){}
+        this.scratchSource = null;
+      }
+      this.smoothRate = 0;
+      this.scratchDirection = 0;
+      this.updateDisplay();
+      return; 
+    }
+
+    if (this.pausedAt >= this.buffer.duration) {
+      this.pausedAt = this.buffer.duration - 0.01;
+    }
+
+    this.jogScrubbed = true; 
+
+    // === РЕЖИМ CDJ ===
+    if (mode === 'CDJ') {
+      if (this.isCdjStuttering) {
+        this.updateCdjStutter(); // Тянем заикание за Джобом
+      }
+      this.updateDisplay(); // Перемотка на паузе в CDJ тихая (ТЗ выполнено)
+      return; 
+    }
+
+    // === РЕЖИМ CTRL ===
+    if (mode === 'CTRL') {
+      this.updateDisplay(); // Перемотка в CTRL тоже тихая
+      return;
+    }
+
+    // === РЕЖИМ VINYL (ЗВУК СКРЕТЧА) ===
+    if (mode === 'VINYL') {
+      const rawRate = timeShiftSec / dt; this.smoothRate = this.smoothRate * 0.6 + rawRate * 0.4; const absRate = Math.abs(this.smoothRate);
+      let dir = this.smoothRate > 0.05 ? 1 : (this.smoothRate < -0.05 ? -1 : this.scratchDirection || 1);
+      if (absRate > 0.02) {
+        if (dir !== this.scratchDirection || !this.scratchSource) {
+          if (this.scratchSource && this.scratchGain) { const oSrc = this.scratchSource; const oGain = this.scratchGain; const aNow = window.AppCore.audioCtx.currentTime; oGain.gain.cancelScheduledValues(aNow); oGain.gain.setValueAtTime(oGain.gain.value, aNow); oGain.gain.linearRampToValueAtTime(0, aNow + 0.015); setTimeout(() => { try { oSrc.stop(); } catch(e){} }, 20); }
+          this.scratchDirection = dir; this.scratchSource = window.AppCore.audioCtx.createBufferSource();
+          this.scratchSource.buffer = dir === 1 ? this.buffer : this.reverseBuffer;
+          this.scratchGain = window.AppCore.audioCtx.createGain(); const aNow = window.AppCore.audioCtx.currentTime;
+          this.scratchGain.gain.setValueAtTime(0, aNow); this.scratchGain.gain.linearRampToValueAtTime(1, aNow + 0.015);
+          this.scratchSource.connect(this.scratchGain); this.scratchGain.connect(window.AppCore.audioCtx.destination);
+          const sPos = dir === 1 ? this.pausedAt : this.buffer.duration - this.pausedAt;
+          if (sPos >= 0 && sPos < this.buffer.duration) this.scratchSource.start(0, sPos);
+        }
+        this.scratchSource.playbackRate.value = Math.max(0.01, Math.min(absRate, 3.0));
+      } else { if (this.scratchGain) { const aNow = window.AppCore.audioCtx.currentTime; this.scratchGain.gain.cancelScheduledValues(aNow); this.scratchGain.gain.setValueAtTime(this.scratchGain.gain.value, aNow); this.scratchGain.gain.linearRampToValueAtTime(0, aNow + 0.015); } }
+      clearTimeout(this.scratchTimeout); this.scratchTimeout = setTimeout(() => { if (this.scratchGain) { const aNow = window.AppCore.audioCtx.currentTime; this.scratchGain.gain.cancelScheduledValues(aNow); this.scratchGain.gain.setValueAtTime(this.scratchGain.gain.value, aNow); this.scratchGain.gain.linearRampToValueAtTime(0, aNow + 0.015); } this.scratchDirection = 0; }, 50);
+      this.updateDisplay();
+    }
+  }
+
+  startCdjStutter() { 
+    if (this.cdjStutterSource) this.stopCdjStutter(); 
+    this.isCdjStuttering = true; 
+    const ctx = window.AppCore.audioCtx;
+    this.cdjStutterSource = ctx.createBufferSource(); 
+    this.cdjStutterSource.buffer = this.buffer; 
+    this.cdjStutterSource.connect(ctx.destination); 
+    this.cdjStutterSource.loop = true; 
+    this.cdjStutterSource.loopStart = this.pausedAt; 
+    this.cdjStutterSource.loopEnd = Math.min(this.buffer.duration, this.pausedAt + 0.075); // 75мс петля (т-т-т-т)
+    this.cdjStutterSource.start(0, this.pausedAt); 
+  }
+
+  updateCdjStutter() { 
+    if (this.isCdjStuttering) {
+      this.stopCdjStutter();
+      this.startCdjStutter();
+    } 
+  }
+
+  stopCdjStutter() { 
+    if (this.cdjStutterSource) { try { this.cdjStutterSource.stop(); this.cdjStutterSource.disconnect(); } catch(e){} this.cdjStutterSource = null; } 
+    this.isCdjStuttering = false; 
+  }
+
+  initScrubEngine(sourceName) {
+    if (this.activeScrubber && this.activeScrubber !== sourceName) return false; 
+    this.activeScrubber = sourceName; this.isScrubbing = true; this.lastScrubTime = Date.now();
+    this.smoothRate = 0; this.scratchDirection = 0;
+    if (this.scratchSource) { try { this.scratchSource.stop(); } catch(e){} this.scratchSource = null; }
+    
+    // Перехват мотора Винила вынесен в логику нажатия тарелки.
+    return true;
+  }
+
+  releaseScrubEngine(sourceName) {
+    if (this.activeScrubber !== sourceName) return; 
+    this.isScrubbing = false; this.activeScrubber = null; const mode = this.jogModes[this.currentJogMode];
+    clearTimeout(this.scratchTimeout);
+    if (this.scratchSource && this.scratchGain) { const oSrc = this.scratchSource; const oGain = this.scratchGain; const aNow = window.AppCore.audioCtx.currentTime; oGain.gain.cancelScheduledValues(aNow); oGain.gain.setValueAtTime(oGain.gain.value, aNow); oGain.gain.linearRampToValueAtTime(0, aNow + 0.015); setTimeout(() => { try { oSrc.stop(); } catch(err){} }, 20); this.scratchSource = null; this.scratchDirection = 0; }
+    
+    if (this.isPlaying) { clearTimeout(this.bendTimeout); this.applyPlaybackRate(0); } 
+    
+    // Страховочный запуск винила, если отпустили, но флаг игры завис (основной запуск в handleMidiMessage)
+    if (mode === 'VINYL' && this.wasPlayingBeforeScrub && !this.isPlatterTouched) {
+       this.play();
+       this.wasPlayingBeforeScrub = false; 
     }
   }
 
@@ -601,73 +771,6 @@ class DjDeck extends HTMLElement {
 
   applyPlaybackRate(customBend = 0) { if (this.source && this.isPlaying) this.source.playbackRate.value = (1 + (this.pitch / 100)) + customBend; }
   applyLoop() { if (this.source && this.isLooping) { this.source.loopStart = this.loopIn; this.source.loopEnd = this.loopOut; this.source.loop = true; } else if (this.source) this.source.loop = false; }
-  startCdjStutter() { if (this.cdjStutterSource) this.stopCdjStutter(); this.isCdjStuttering = true; this.cdjStutterSource = window.AppCore.audioCtx.createBufferSource(); this.cdjStutterSource.buffer = this.buffer; this.cdjStutterSource.connect(window.AppCore.audioCtx.destination); this.cdjStutterSource.loop = true; this.cdjStutterSource.loopStart = this.pausedAt; this.cdjStutterSource.loopEnd = this.pausedAt + 0.085; this.cdjStutterSource.start(0, this.pausedAt); }
-  updateCdjStutter() { if (this.cdjStutterSource) { this.cdjStutterSource.loopStart = this.pausedAt; this.cdjStutterSource.loopEnd = this.pausedAt + 0.085; } }
-  stopCdjStutter() { if (this.cdjStutterSource) { try { this.cdjStutterSource.stop(); this.cdjStutterSource.disconnect(); } catch(e){} this.cdjStutterSource = null; } this.isCdjStuttering = false; }
-
-  initScrubEngine(sourceName) {
-    if (this.activeScrubber && this.activeScrubber !== sourceName) return false; 
-    this.activeScrubber = sourceName; this.isScrubbing = true; this.lastScrubTime = Date.now();
-    this.smoothRate = 0; this.scratchDirection = 0;
-    if (this.scratchSource) { try { this.scratchSource.stop(); } catch(e){} this.scratchSource = null; }
-    const mode = this.jogModes[this.currentJogMode];
-
-    // В ВИНИЛЕ глушим мотор ТОЛЬКО если физически нажали на металл сверху!
-    // Если диджей просто подталкивает пластиковый бок — трек продолжает петь.
-    if (mode === 'VINYL' && this.isPlaying && this.isPlatterTouched) { 
-      this.wasPlayingBeforeScrub = true; 
-      this.pause(); 
-    } else {
-      this.wasPlayingBeforeScrub = false;
-    }
-
-    if (mode === 'CDJ' && !this.isPlaying && !this.isCdjStuttering) this.startCdjStutter();
-    return true;
-  }
-
-  executeScrubStep(deltaSec) {
-    if (!this.isScrubbing) return;
-    const now = Date.now(); const dt = Math.max(0.005, (now - this.lastScrubTime) / 1000); this.lastScrubTime = now; const mode = this.jogModes[this.currentJogMode];
-    
-    // Если трек ИГРАЕТ, и мы крутим пластиковый бок (или режим CTRL/CDJ) -> делаем мягкий Pitch Bend
-    if (this.isPlaying && (!this.isPlatterTouched || mode === 'CTRL' || mode === 'CDJ')) {
-      const bendFactor = Math.max(-0.5, Math.min(0.5, deltaSec * 15)); 
-      this.applyPlaybackRate(bendFactor); 
-      clearTimeout(this.bendTimeout);
-      this.bendTimeout = setTimeout(() => { if (this.isScrubbing) this.applyPlaybackRate(0); }, 100);
-    } else {
-      this.pausedAt = Math.max(0, Math.min(this.buffer.duration, this.pausedAt + deltaSec));
-      if (!this.isPlaying && Math.abs(deltaSec) > 0.0005) this.jogScrubbed = true; 
-      if (mode === 'VINYL') {
-        const rawRate = deltaSec / dt; this.smoothRate = this.smoothRate * 0.6 + rawRate * 0.4; const absRate = Math.abs(this.smoothRate);
-        let dir = this.smoothRate > 0.05 ? 1 : (this.smoothRate < -0.05 ? -1 : this.scratchDirection || 1);
-        if (absRate > 0.02) {
-          if (dir !== this.scratchDirection || !this.scratchSource) {
-            if (this.scratchSource && this.scratchGain) { const oSrc = this.scratchSource; const oGain = this.scratchGain; const aNow = window.AppCore.audioCtx.currentTime; oGain.gain.cancelScheduledValues(aNow); oGain.gain.setValueAtTime(oGain.gain.value, aNow); oGain.gain.linearRampToValueAtTime(0, aNow + 0.015); setTimeout(() => { try { oSrc.stop(); } catch(e){} }, 20); }
-            this.scratchDirection = dir; this.scratchSource = window.AppCore.audioCtx.createBufferSource();
-            this.scratchSource.buffer = dir === 1 ? this.buffer : this.reverseBuffer;
-            this.scratchGain = window.AppCore.audioCtx.createGain(); const aNow = window.AppCore.audioCtx.currentTime;
-            this.scratchGain.gain.setValueAtTime(0, aNow); this.scratchGain.gain.linearRampToValueAtTime(1, aNow + 0.015);
-            this.scratchSource.connect(this.scratchGain); this.scratchGain.connect(window.AppCore.audioCtx.destination);
-            const sPos = dir === 1 ? this.pausedAt : this.buffer.duration - this.pausedAt;
-            if (sPos >= 0 && sPos < this.buffer.duration) this.scratchSource.start(0, sPos);
-          }
-          this.scratchSource.playbackRate.value = Math.max(0.01, Math.min(absRate, 3.0));
-        } else { if (this.scratchGain) { const aNow = window.AppCore.audioCtx.currentTime; this.scratchGain.gain.cancelScheduledValues(aNow); this.scratchGain.gain.setValueAtTime(this.scratchGain.gain.value, aNow); this.scratchGain.gain.linearRampToValueAtTime(0, aNow + 0.015); } }
-        clearTimeout(this.scratchTimeout); this.scratchTimeout = setTimeout(() => { if (this.scratchGain) { const aNow = window.AppCore.audioCtx.currentTime; this.scratchGain.gain.cancelScheduledValues(aNow); this.scratchGain.gain.setValueAtTime(this.scratchGain.gain.value, aNow); this.scratchGain.gain.linearRampToValueAtTime(0, aNow + 0.015); } this.scratchDirection = 0; }, 50);
-      } else if (this.isCdjStuttering) this.updateCdjStutter();
-      this.updateDisplay();
-    }
-  }
-
-  releaseScrubEngine(sourceName) {
-    if (this.activeScrubber !== sourceName) return; 
-    this.isScrubbing = false; this.activeScrubber = null; const mode = this.jogModes[this.currentJogMode];
-    if (this.isCdjStuttering) this.stopCdjStutter(); clearTimeout(this.scratchTimeout);
-    if (this.scratchSource && this.scratchGain) { const oSrc = this.scratchSource; const oGain = this.scratchGain; const aNow = window.AppCore.audioCtx.currentTime; oGain.gain.cancelScheduledValues(aNow); oGain.gain.setValueAtTime(oGain.gain.value, aNow); oGain.gain.linearRampToValueAtTime(0, aNow + 0.015); setTimeout(() => { try { oSrc.stop(); } catch(err){} }, 20); this.scratchSource = null; this.scratchDirection = 0; }
-    if (mode === 'CTRL' || mode === 'CDJ' || !this.isPlatterTouched) { clearTimeout(this.bendTimeout); this.applyPlaybackRate(0); } 
-    if (mode === 'VINYL' && this.wasPlayingBeforeScrub) this.play();
-  }
 
   connectedCallback() {
     this.shadowRoot.innerHTML = this.getTemplate();
@@ -770,8 +873,8 @@ class DjDeck extends HTMLElement {
         for (let i = 0; i < this.buffer.numberOfChannels; i++) { const dest = this.reverseBuffer.getChannelData(i); const src = this.buffer.getChannelData(i); dest.set(src); dest.reverse(); }
         
         if (this.midiOutput) {
-          this.midiOutput.send([144, 1, 127]); // Зажигаем Play на Деноне
-          this.midiOutput.send([144, 2, 127]); // Зажигаем Cue на Деноне
+          this.midiOutput.send([144, 1, 127]); 
+          this.midiOutput.send([144, 2, 127]); 
         }
 
         if (this.keyStr === "---") {
