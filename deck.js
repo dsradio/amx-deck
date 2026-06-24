@@ -53,14 +53,17 @@ class DjDeck extends HTMLElement {
     this.activeScrubber = null; 
     this.isScrubbing = false;
     this.lastScrubTime = 0;
-    this.wasPlayingBeforeScrub = false;
     this.bendTimeout = null;
 
-    // === АППАРАТНЫЙ СТАТУС DENON LC6000 ===
+    // === АППАРАТНЫЙ СТАТУС ===
     this.shiftPressed = false;
     this.midiOutput = null; 
     this.gainNode = null;
     this.jogStopTimer = null; 
+    
+    // Переменные для матрицы состояний джога
+    this.isPlatterTouched = false;
+    this.wasPlayingBeforePlatter = false;
   }
 
   getLoopSizeStr(val) {
@@ -76,46 +79,22 @@ class DjDeck extends HTMLElement {
     return `
       <style>
         * { box-sizing: border-box; user-select: none; -webkit-user-select: none; }
-        
-        .deck { 
-          position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; overflow: hidden; overscroll-behavior: none;
-          background: #000; padding: 10px; display: flex; flex-direction: column; color: #fff; font-family: sans-serif;
-          touch-action: none; 
-        }
-        
+        .deck { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; overflow: hidden; overscroll-behavior: none; background: #000; padding: 10px; display: flex; flex-direction: column; color: #fff; font-family: sans-serif; touch-action: none; }
         .deck-inner { max-width: 400px; margin: 0 auto; width: 100%; height: 100%; display: flex; flex-direction: column; }
-        
         .top-bar { display: flex; justify-content: space-between; align-items: center; font-size: 18px; font-weight: bold; margin-bottom: 4px; padding: 0 4px; }
         .top-bar label { cursor: pointer; }
         #fileInput { display: none; }
-        
-        .midi-btn {
-          background: #222; color: #ffaa00; border: 1px solid #ffaa00; 
-          border-radius: 4px; font-size: 11px; font-weight: bold; padding: 4px 10px; cursor: pointer; touch-action: none;
-        }
+        .midi-btn { background: #222; color: #ffaa00; border: 1px solid #ffaa00; border-radius: 4px; font-size: 11px; font-weight: bold; padding: 4px 10px; cursor: pointer; touch-action: none; }
         .midi-btn:active { background: #ffaa00; color: #000; }
         .midi-on { background: #008800 !important; color: #fff !important; border-color: #00ff00 !important; }
         .midi-err { background: #880000 !important; color: #fff !important; border-color: #ff0000 !important; }
-
-        .debug-console {
-          background: #0d0d11; color: #00ffcc; font-family: monospace; font-size: 10px; 
-          padding: 3px 6px; border-radius: 2px; margin-bottom: 6px; border: 1px solid #1a1a24;
-          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;
-        }
-
-        .track-header {
-          background: #121218; color: #00f0ff; font-size: 13px; font-weight: bold; padding: 6px 10px;
-          border-radius: 4px; margin-bottom: 8px; border: 1px solid #222; white-space: nowrap;
-          overflow: hidden; text-overflow: ellipsis; text-align: center; letter-spacing: 0.5px;
-        }
-
+        .debug-console { background: #0d0d11; color: #00ffcc; font-family: monospace; font-size: 10px; padding: 3px 6px; border-radius: 2px; margin-bottom: 6px; border: 1px solid #1a1a24; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; }
+        .track-header { background: #121218; color: #00f0ff; font-size: 13px; font-weight: bold; padding: 6px 10px; border-radius: 4px; margin-bottom: 8px; border: 1px solid #222; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; letter-spacing: 0.5px; }
         .waveform-overview { display: none; height: 30px; background: #181820; margin-bottom: 10px; text-align: center; line-height: 30px; color: #555; font-size: 11px; font-weight: bold; border-radius: 4px; border: 1px solid #222;}
-        
         .wave-block { position: relative; height: 115px; background: #0a0a0f; margin-bottom: 20px; border-top: 1px solid #222; border-bottom: 1px solid #222; display: flex; flex-direction: column; box-shadow: 0 4px 15px rgba(0,0,0,0.6); }
         .canvas-wrap { position: relative; flex: 1; width: 100%; overflow: hidden; cursor: grab; touch-action: none; }
         .canvas-wrap:active { cursor: grabbing; }
         #waveCanvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
-
         .wave-toolbar { height: 38px; background: #121218; border-top: 1px solid #242430; display: flex; justify-content: space-between; align-items: center; padding: 0 6px; gap: 12px; }
         .zoom-group { display: flex; gap: 4px; width: 75px; height: 28px; }
         .grid-group { display: flex; gap: 3px; flex: 1; height: 28px; justify-content: flex-end; }
@@ -123,7 +102,6 @@ class DjDeck extends HTMLElement {
         .wt-btn:active { background: #00f0ff; color: #000; border-color: #00f0ff; }
         .btn-set { background: #ff8c00; color: #000; font-weight: 900; border-color: #ffaa00; font-size: 12px; flex: 1.4;}
         .btn-set:active { background: #ffffff; }
-
         .jog-section { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; padding: 0 10px; }
         .jog-wheel { position: relative; width: 200px; height: 200px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: #000; touch-action: none; cursor: grab; }
         .progress-ring { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border-radius: 50%; pointer-events: none; }
@@ -133,34 +111,23 @@ class DjDeck extends HTMLElement {
         .jog-key { color: #00aaff; font-size: 20px; font-weight: bold; }
         .jog-bpm { color: #00aaff; font-size: 28px; font-weight: bold; font-variant-numeric: tabular-nums;}
         .jog-time { color: #aaa; font-size: 18px; font-weight: bold; font-variant-numeric: tabular-nums; }
-        
         .controls-middle { display: flex; gap: 10px; margin-bottom: 20px; }
         .control-col { flex: 1; display: flex; flex-direction: column; gap: 5px; }
-
         .pitch-top-bar { display: flex; justify-content: space-between; height: 20px; margin-bottom: 2px; }
         .pitch-top-btn { background: #1a1a24; border: 1px solid #333; color: #aaa; font-size: 10px; font-weight: bold; border-radius: 3px; cursor: pointer; flex: 1; touch-action: none; display: flex; align-items: center; justify-content: center;}
         .pitch-top-btn:first-child { margin-right: 2px; }
         .pitch-top-btn:active { background: #333; color: #fff; }
-
-        .pitch-box { 
-          border: 1px solid #333; background: #08080a; color: #fff; 
-          height: 60px; display: flex; align-items: center; justify-content: space-between; 
-          padding: 0 12px; touch-action: none; border-radius: 3px;
-        }
+        .pitch-box { border: 1px solid #333; background: #08080a; color: #fff; height: 60px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; touch-action: none; border-radius: 3px; }
         .pitch-left-col { display: flex; flex-direction: column; align-items: center; justify-content: center; width: 25px; gap: 4px; }
         .pitch-dir { font-size: 16px; color: #222; line-height: 1; font-weight: bold; }
         .pitch-zero { font-size: 18px; color: #0f0; line-height: 1; font-weight: bold; transition: color 0.1s; }
-        
         .pitch-right-col { flex: 1; text-align: right; }
         .pitch-val { font-size: 28px; margin: 0; color: #00f0ff; letter-spacing: 1px; font-weight: bold; font-variant-numeric: tabular-nums; }
-        
         .lit-plus { color: #ff0055; text-shadow: 0 0 6px #ff0055; }
         .lit-minus { color: #00aaff; text-shadow: 0 0 6px #00aaff; }
         .lit-zero { color: #00ff00 !important; text-shadow: 0 0 8px #00ff00; }
-
         .pitch-bend-row { display: flex; gap: 5px; height: 40px; }
         .pitch-bend-row button { flex: 1; background: #4a004a; color: white; border: none; font-size: 20px; font-weight: bold; border-radius: 4px; touch-action: none;}
-        
         .loop-top { display: flex; border: 1px solid #fff; height: 50px; }
         .loop-top button { background: transparent; color: white; border: none; font-size: 20px; font-weight: bold; flex: 1; touch-action: none;}
         .loop-size { flex: 2; text-align: center; display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: bold; color: #fff; cursor: pointer; touch-action: none;}
@@ -168,7 +135,6 @@ class DjDeck extends HTMLElement {
         .loop-bottom button { flex: 1; background: #000080; color: white; border: none; font-size: 18px; font-weight: bold; border-radius: 4px; touch-action: none;}
         .loop-active-in { background: #cccc00 !important; color: #000 !important; }
         .loop-active-loop { background: #ff8c00 !important; color: #000 !important; }
-        
         .transport-wrap { display: flex; flex-direction: column; gap: 10px; margin-top: auto; padding-bottom: 20px; }
         .mini-btn { background: #333; color: white; border: none; padding: 10px; font-weight: bold; border-radius: 4px; width: 80px; cursor: pointer; touch-action: none; }
         .bottom-btns { display: flex; gap: 10px; justify-content: space-between; }
@@ -184,31 +150,16 @@ class DjDeck extends HTMLElement {
             <button class="midi-btn" id="midiConnectBtn">MIDI: CONNECT</button>
             <label><span id="libraryBtn">LIBRARY</span><input type="file" id="fileInput" accept=".mp3, .wav, .m4a, audio/*"></label>
           </div>
-          
           <div class="debug-console" id="midiConsoleLog">STATUS: Click 'CONNECT' to init MIDI</div>
-          
           <div class="track-header" id="trackTitleDisplay">LOAD TRACK...</div>
           <div class="waveform-overview">OVERVIEW</div>
-          
           <div class="wave-block" id="waveBlock">
-            <div class="canvas-wrap" id="canvasWrap">
-              <canvas id="waveCanvas"></canvas>
-            </div>
+            <div class="canvas-wrap" id="canvasWrap"><canvas id="waveCanvas"></canvas></div>
             <div class="wave-toolbar">
-              <div class="zoom-group">
-                <button class="wt-btn" id="wZoomOut">-</button>
-                <button class="wt-btn" id="wZoomIn">+</button>
-              </div>
-              <div class="grid-group">
-                <button class="wt-btn" id="gLeftFast">&lt;&lt;</button>
-                <button class="wt-btn" id="gLeftSlow">&lt;</button>
-                <button class="wt-btn btn-set" id="gridSetBtn">SET</button>
-                <button class="wt-btn" id="gRightSlow">&gt;</button>
-                <button class="wt-btn" id="gRightFast">&gt;&gt;</button>
-              </div>
+              <div class="zoom-group"><button class="wt-btn" id="wZoomOut">-</button><button class="wt-btn" id="wZoomIn">+</button></div>
+              <div class="grid-group"><button class="wt-btn" id="gLeftFast">&lt;&lt;</button><button class="wt-btn" id="gLeftSlow">&lt;</button><button class="wt-btn btn-set" id="gridSetBtn">SET</button><button class="wt-btn" id="gRightSlow">&gt;</button><button class="wt-btn" id="gRightFast">&gt;&gt;</button></div>
             </div>
           </div>
-          
           <div class="jog-section">
             <button class="mini-btn" id="jogModeBtn" style="background: #00aaff; color: #000; width: 60px; height: 40px; padding: 0;">CTRL</button>
             <div class="jog-wheel" id="jogWheel">
@@ -223,22 +174,12 @@ class DjDeck extends HTMLElement {
             </div>
             <button class="mini-btn" id="mtBtn" style="background: #222; color: #888; width: 60px; height: 40px; padding: 0;">MT</button>
           </div>
-          
           <div class="controls-middle">
             <div class="control-col">
-              <div class="pitch-top-bar">
-                <button class="pitch-top-btn" id="pRangeBtn">±8%</button>
-                <button class="pitch-top-btn" id="pInvBtn">INV: OFF</button>
-              </div>
+              <div class="pitch-top-bar"><button class="pitch-top-btn" id="pRangeBtn">±8%</button><button class="pitch-top-btn" id="pInvBtn">INV: OFF</button></div>
               <div class="pitch-box" id="pitchBox">
-                <div class="pitch-left-col">
-                  <div class="pitch-dir" id="pDirUp">▲</div>
-                  <div class="pitch-zero" id="pZeroLED">▬</div>
-                  <div class="pitch-dir" id="pDirDown">▼</div>
-                </div>
-                <div class="pitch-right-col">
-                  <div class="pitch-val" id="pValDisplay">+0.00%</div>
-                </div>
+                <div class="pitch-left-col"><div class="pitch-dir" id="pDirUp">▲</div><div class="pitch-zero" id="pZeroLED">▬</div><div class="pitch-dir" id="pDirDown">▼</div></div>
+                <div class="pitch-right-col"><div class="pitch-val" id="pValDisplay">+0.00%</div></div>
               </div>
               <div class="pitch-bend-row"><button id="bendMinus">-</button><button id="bendPlus">+</button></div>
             </div>
@@ -247,7 +188,6 @@ class DjDeck extends HTMLElement {
               <div class="loop-bottom"><button id="loopInBtn">IN</button><button id="loopOutBtn">OUT</button></div>
             </div>
           </div>
-          
           <div class="transport-wrap">
             <div><button class="mini-btn" id="resetBtn">|&lt;&lt;</button></div>
             <div class="bottom-btns"><button class="btn-transport" id="cueBtn">CUE</button><button class="btn-transport" id="playBtn">▶||</button></div>
@@ -265,25 +205,19 @@ class DjDeck extends HTMLElement {
 
     if (!navigator.requestMIDIAccess) {
       btn.className = 'midi-btn midi-err'; btn.innerText = "NO API";
-      log.innerText = "ERR: Your browser strictly blocks Web MIDI!";
       return;
     }
 
     navigator.requestMIDIAccess({ sysex: false }).then(access => {
       btn.className = 'midi-btn midi-on'; btn.innerText = "DENON: ONLINE";
-      
       let inCount = 0, outCount = 0;
 
       for (const input of access.inputs.values()) {
-        inCount++;
-        input.onmidimessage = (e) => this.handleMIDIMessage(e);
+        inCount++; input.onmidimessage = (e) => this.handleMIDIMessage(e);
       }
-
       for (const output of access.outputs.values()) {
-        outCount++;
-        this.midiOutput = output; 
+        outCount++; this.midiOutput = output; 
       }
-
       log.innerText = `OK! Denon LC6000 Active (In:${inCount} Out:${outCount})`;
 
       if (this.midiOutput) {
@@ -292,14 +226,10 @@ class DjDeck extends HTMLElement {
       }
 
       access.onstatechange = (e) => {
-        if (e.port.type === 'output' && e.port.state === 'connected') {
-          this.midiOutput = e.port;
-        }
+        if (e.port.type === 'output' && e.port.state === 'connected') this.midiOutput = e.port;
       };
-
     }).catch(err => {
       btn.className = 'midi-btn midi-err'; btn.innerText = "REJECTED";
-      log.innerText = `DENIED: ${err.message || "Permission blocked"}`;
     });
   }
 
@@ -323,7 +253,15 @@ class DjDeck extends HTMLElement {
     const playBtn = this.shadowRoot.getElementById('playBtn');
     if(this.midiOutput) this.midiOutput.send([144, 2, 127]); 
 
-    if (this.isCdjStuttering) { this.stopCdjStutter(); this.cuePoint = this.pausedAt; this.jogScrubbed = false; this.updateDisplay(); return; }
+    // Выход из заикания CDJ по нажатию CUE (твое ТЗ)
+    if (this.isCdjStuttering) { 
+      this.stopCdjStutter(); 
+      this.cuePoint = this.pausedAt; 
+      this.jogScrubbed = false; 
+      this.updateDisplay(); 
+      return; 
+    }
+
     if (this.isPlaying) { this.pause(); this.pausedAt = this.cuePoint; this.jogScrubbed = false; this.updateDisplay(); playBtn.innerText = "▶||"; if(this.midiOutput) this.midiOutput.send([144, 1, 0]); } 
     else {
       if (this.pausedAt === 0) { this.cuePoint = 0; this.jogScrubbed = false; } 
@@ -359,7 +297,39 @@ class DjDeck extends HTMLElement {
       return;
     }
 
-    // 3. ПИТЧ-ФЕЙДЕР (CC 176, ID: 40 [0x28])
+    // === ВЕРХНЯЯ ТАРЕЛКА ДЖОГА (Нота 40) ===
+    if (id === 40 && (status === 144 || status === 128)) {
+      const mode = this.jogModes[this.currentJogMode];
+      
+      if (isNoteOn) {
+        this.isPlatterTouched = true;
+        if (mode === 'VINYL') {
+          if (this.isPlaying) {
+            this.wasPlayingBeforePlatter = true;
+            this.pause(); // В виниле нажатие глушит музыку
+          } else {
+            this.wasPlayingBeforePlatter = false;
+          }
+        } else if (mode === 'CDJ') {
+          // В CDJ включает заикалку только на паузе
+          if (!this.isPlaying && !this.isCdjStuttering) {
+            this.startCdjStutter();
+          }
+        }
+      }
+      
+      if (isNoteOff) {
+        this.isPlatterTouched = false;
+        if (mode === 'VINYL' && this.wasPlayingBeforePlatter) {
+          this.play(); // В виниле отпускание продолжает игру
+          this.wasPlayingBeforePlatter = false;
+        }
+        // В CDJ отпускание ничего не делает, заикалка продолжается до нажатия CUE
+      }
+      return;
+    }
+
+    // === ТВОЙ ОРИГИНАЛЬНЫЙ РАБОЧИЙ ПИТЧ ===
     if (status === 176 && id === 40) {
       const maxP = this.pitchRanges[this.currentPitchRangeIdx];
       const factor = (value - 64) / 63; 
@@ -369,27 +339,55 @@ class DjDeck extends HTMLElement {
       return;
     }
 
-    // === 4. ДЖОГ (СЧЕТЧИК ШАГОВ НА КАНАЛЕ 49 [0x31]) ===
-    if (status === 176 && id === 49) {
-      if (this._lastJogByte !== undefined && this.buffer) {
-        let delta = value - this._lastJogByte;
+    // === ТВОЙ ОРИГИНАЛЬНЫЙ РАБОЧИЙ ДЖОГ (С ВШИТОЙ МАТРИЦЕЙ РЕЖИМОВ) ===
+    if (status === 176 && (id === 54 || id === 17)) {
+      let delta = 0;
+      if (id === 54) delta = value <= 63 ? value : value - 128;
+      else if (id === 17) delta = value <= 63 ? -value : -(128 - value);
 
-        // Математика сшивания краев при скачке 127 <-> 0
-        if (delta < -64) delta += 128;
-        else if (delta > 64) delta -= 128;
+      if (delta !== 0 && this.buffer) {
+        if (!this.isScrubbing) this.initScrubEngine('JOG');
+        clearTimeout(this.jogStopTimer);
+        this.jogStopTimer = setTimeout(() => {
+          this.releaseScrubEngine('JOG');
+        }, 80);
 
-        if (delta !== 0) {
-          if (!this.isScrubbing) this.initScrubEngine('JOG');
+        const mode = this.jogModes[this.currentJogMode];
 
-          clearTimeout(this.jogStopTimer);
-          this.jogStopTimer = setTimeout(() => {
-            this.releaseScrubEngine('JOG');
-          }, 80);
-
-          this.executeScrubStep(delta * 0.003); 
+        if (this.isPlatterTouched) {
+          // --- РУКА ПРИЖАТА К ВЕРХУ ---
+          if (mode === 'VINYL') {
+            this.executeScrubStep(delta * 0.012); // Царапаем
+          } else if (mode === 'CDJ') {
+            if (this.isPlaying) {
+              this.nudgeMotor(delta * 0.012); // В игре просто подталкиваем (питч-бенд)
+            } else {
+              this.executeScrubStep(delta * 0.005); // Сдвигаем заикающийся кадр
+              this.updateCdjStutter();
+            }
+          } else if (mode === 'CTRL') {
+            this.executeScrubStep(delta * 0.05); // Быстрая перемотка
+          }
+        } else {
+          // --- КРУТИМ ЗА БОК ---
+          if (this.isPlaying) {
+            this.nudgeMotor(delta * 0.012); // В игре подталкиваем (питч-бенд)
+          } else {
+            if (mode === 'VINYL') {
+              this.executeScrubStep(delta * 0.012); // На паузе царапаем сбоку
+            } else if (mode === 'CDJ') {
+              if (this.isCdjStuttering) {
+                this.executeScrubStep(delta * 0.005); // Сдвигаем заикающийся кадр
+                this.updateCdjStutter();
+              } else {
+                this.executeScrubStep(delta * 0.012); // Тихая перемотка
+              }
+            } else if (mode === 'CTRL') {
+              this.executeScrubStep(delta * 0.002); // Медленная, ювелирная перемотка
+            }
+          }
         }
       }
-      this._lastJogByte = value;
       return;
     }
 
@@ -403,6 +401,16 @@ class DjDeck extends HTMLElement {
       this.applyPlaybackRate(0);
       return;
     }
+  }
+
+  // Метод аппаратного подталкивания (Питч-бенд блином)
+  nudgeMotor(amount) {
+    if (!this.isPlaying) return;
+    this.applyPlaybackRate(Math.max(-0.35, Math.min(0.35, amount)));
+    clearTimeout(this.bendTimeout);
+    this.bendTimeout = setTimeout(() => {
+      if (this.isPlaying) this.applyPlaybackRate(0);
+    }, 80);
   }
 
   updatePitchUI() {
@@ -594,33 +602,47 @@ class DjDeck extends HTMLElement {
 
   executeScrubStep(deltaSec) {
     if (!this.isScrubbing) return;
-    const now = Date.now(); const dt = Math.max(0.005, (now - this.lastScrubTime) / 1000); this.lastScrubTime = now; const mode = this.jogModes[this.currentJogMode];
-    if (this.isPlaying && (mode === 'CTRL' || mode === 'CDJ')) {
-      const bendFactor = Math.max(-0.5, Math.min(0.5, deltaSec * 15)); this.applyPlaybackRate(bendFactor); clearTimeout(this.bendTimeout);
-      this.bendTimeout = setTimeout(() => { if (this.isScrubbing) this.applyPlaybackRate(0); }, 100);
-    } else {
-      this.pausedAt = Math.max(0, Math.min(this.buffer.duration, this.pausedAt + deltaSec));
-      if (!this.isPlaying && Math.abs(deltaSec) > 0.0005) this.jogScrubbed = true; 
-      if (mode === 'VINYL') {
-        const rawRate = deltaSec / dt; this.smoothRate = this.smoothRate * 0.6 + rawRate * 0.4; const absRate = Math.abs(this.smoothRate);
-        let dir = this.smoothRate > 0.05 ? 1 : (this.smoothRate < -0.05 ? -1 : this.scratchDirection || 1);
-        if (absRate > 0.02) {
-          if (dir !== this.scratchDirection || !this.scratchSource) {
-            if (this.scratchSource && this.scratchGain) { const oSrc = this.scratchSource; const oGain = this.scratchGain; const aNow = window.AppCore.audioCtx.currentTime; oGain.gain.cancelScheduledValues(aNow); oGain.gain.setValueAtTime(oGain.gain.value, aNow); oGain.gain.linearRampToValueAtTime(0, aNow + 0.015); setTimeout(() => { try { oSrc.stop(); } catch(e){} }, 20); }
-            this.scratchDirection = dir; this.scratchSource = window.AppCore.audioCtx.createBufferSource();
-            this.scratchSource.buffer = dir === 1 ? this.buffer : this.reverseBuffer;
-            this.scratchGain = window.AppCore.audioCtx.createGain(); const aNow = window.AppCore.audioCtx.currentTime;
-            this.scratchGain.gain.setValueAtTime(0, aNow); this.scratchGain.gain.linearRampToValueAtTime(1, aNow + 0.015);
-            this.scratchSource.connect(this.scratchGain); this.scratchGain.connect(window.AppCore.audioCtx.destination);
-            const sPos = dir === 1 ? this.pausedAt : this.buffer.duration - this.pausedAt;
-            if (sPos >= 0 && sPos < this.buffer.duration) this.scratchSource.start(0, sPos);
-          }
-          this.scratchSource.playbackRate.value = Math.max(0.01, Math.min(absRate, 3.0));
-        } else { if (this.scratchGain) { const aNow = window.AppCore.audioCtx.currentTime; this.scratchGain.gain.cancelScheduledValues(aNow); this.scratchGain.gain.setValueAtTime(this.scratchGain.gain.value, aNow); this.scratchGain.gain.linearRampToValueAtTime(0, aNow + 0.015); } }
-        clearTimeout(this.scratchTimeout); this.scratchTimeout = setTimeout(() => { if (this.scratchGain) { const aNow = window.AppCore.audioCtx.currentTime; this.scratchGain.gain.cancelScheduledValues(aNow); this.scratchGain.gain.setValueAtTime(this.scratchGain.gain.value, aNow); this.scratchGain.gain.linearRampToValueAtTime(0, aNow + 0.015); } this.scratchDirection = 0; }, 50);
-      } else if (this.isCdjStuttering) this.updateCdjStutter();
+    const now = Date.now(); const dt = Math.max(0.005, (now - this.lastScrubTime) / 1000); this.lastScrubTime = now;
+    
+    this.pausedAt = Math.max(0, Math.min(this.buffer.duration, this.pausedAt + deltaSec));
+
+    // --- ЖЕСТКАЯ БЕТОННАЯ СТЕНА (УБИВАЕМ РАССИНХРОН И ЗВУКИ ИЗ ПРОШЛОГО НА ОТМЕТКЕ 0:00) ---
+    if (this.pausedAt === 0) {
+      if (this.scratchGain) {
+          const aNow = window.AppCore.audioCtx.currentTime;
+          this.scratchGain.gain.cancelScheduledValues(aNow);
+          this.scratchGain.gain.setValueAtTime(0, aNow);
+      }
+      if (this.scratchSource) { try { this.scratchSource.stop(); } catch(e){} this.scratchSource = null; }
+      this.smoothRate = 0; this.scratchDirection = 0; 
       this.updateDisplay();
+      return; // Жёсткий выход, чтобы не наслаивать звук
     }
+
+    if (!this.isPlaying && Math.abs(deltaSec) > 0.0005) this.jogScrubbed = true; 
+    
+    // Чистая механика скретча (логика вызова уже разобрана в матрице джога)
+    const rawRate = deltaSec / dt; this.smoothRate = this.smoothRate * 0.6 + rawRate * 0.4; const absRate = Math.abs(this.smoothRate);
+    let dir = this.smoothRate > 0.05 ? 1 : (this.smoothRate < -0.05 ? -1 : this.scratchDirection || 1);
+    
+    if (absRate > 0.02) {
+      if (dir !== this.scratchDirection || !this.scratchSource) {
+        if (this.scratchSource && this.scratchGain) { const oSrc = this.scratchSource; const oGain = this.scratchGain; const aNow = window.AppCore.audioCtx.currentTime; oGain.gain.cancelScheduledValues(aNow); oGain.gain.setValueAtTime(oGain.gain.value, aNow); oGain.gain.linearRampToValueAtTime(0, aNow + 0.015); setTimeout(() => { try { oSrc.stop(); } catch(e){} }, 20); }
+        this.scratchDirection = dir; this.scratchSource = window.AppCore.audioCtx.createBufferSource();
+        this.scratchSource.buffer = dir === 1 ? this.buffer : this.reverseBuffer;
+        this.scratchGain = window.AppCore.audioCtx.createGain(); const aNow = window.AppCore.audioCtx.currentTime;
+        this.scratchGain.gain.setValueAtTime(0, aNow); this.scratchGain.gain.linearRampToValueAtTime(1, aNow + 0.015);
+        this.scratchSource.connect(this.scratchGain); this.scratchGain.connect(window.AppCore.audioCtx.destination);
+        const sPos = dir === 1 ? this.pausedAt : this.buffer.duration - this.pausedAt;
+        if (sPos >= 0 && sPos < this.buffer.duration) this.scratchSource.start(0, sPos);
+      }
+      this.scratchSource.playbackRate.value = Math.max(0.01, Math.min(absRate, 3.0));
+    } else { if (this.scratchGain) { const aNow = window.AppCore.audioCtx.currentTime; this.scratchGain.gain.cancelScheduledValues(aNow); this.scratchGain.gain.setValueAtTime(this.scratchGain.gain.value, aNow); this.scratchGain.gain.linearRampToValueAtTime(0, aNow + 0.015); } }
+    
+    clearTimeout(this.scratchTimeout); 
+    this.scratchTimeout = setTimeout(() => { if (this.scratchGain) { const aNow = window.AppCore.audioCtx.currentTime; this.scratchGain.gain.cancelScheduledValues(aNow); this.scratchGain.gain.setValueAtTime(this.scratchGain.gain.value, aNow); this.scratchGain.gain.linearRampToValueAtTime(0, aNow + 0.015); } this.scratchDirection = 0; }, 50);
+    
+    this.updateDisplay();
   }
 
   releaseScrubEngine(sourceName) {
@@ -628,7 +650,7 @@ class DjDeck extends HTMLElement {
     this.isScrubbing = false; this.activeScrubber = null; const mode = this.jogModes[this.currentJogMode];
     if (this.isCdjStuttering) this.stopCdjStutter(); clearTimeout(this.scratchTimeout);
     if (this.scratchSource && this.scratchGain) { const oSrc = this.scratchSource; const oGain = this.scratchGain; const aNow = window.AppCore.audioCtx.currentTime; oGain.gain.cancelScheduledValues(aNow); oGain.gain.setValueAtTime(oGain.gain.value, aNow); oGain.gain.linearRampToValueAtTime(0, aNow + 0.015); setTimeout(() => { try { oSrc.stop(); } catch(err){} }, 20); this.scratchSource = null; this.scratchDirection = 0; }
-    if (mode === 'CTRL' || mode === 'CDJ') { clearTimeout(this.bendTimeout); this.applyPlaybackRate(0); } 
+    clearTimeout(this.bendTimeout); this.applyPlaybackRate(0); 
     if (mode === 'VINYL' && this.wasPlayingBeforeScrub) this.play();
   }
 
