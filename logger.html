@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>DENON LC6000 - BLACK BOX</title>
+  <style>
+    body { background: #0c0c10; color: #00ffcc; font-family: monospace; text-align: center; padding: 20px; overscroll-behavior: none; }
+    h2 { color: #fff; margin-bottom: 5px; }
+    .status { font-size: 13px; color: #888; margin-bottom: 20px; }
+    button { display: block; width: 100%; max-width: 360px; height: 65px; margin: 0 auto 15px; font-size: 18px; font-weight: bold; background: #222; color: #fff; border: 2px solid #00ffcc; border-radius: 8px; cursor: pointer; }
+    button:active { background: #00ffcc; color: #000; }
+    button:disabled { opacity: 0.3; border-color: #555; }
+    #recBtn.recording { background: #ff0055; border-color: #ff0055; color: #fff; animation: pulse 1s infinite; }
+    @keyframes pulse { 50% { opacity: 0.6; } }
+    textarea { width: 100%; max-width: 360px; height: 280px; background: #000; color: #00f0ff; border: 1px solid #333; padding: 10px; font-size: 11px; font-family: monospace; border-radius: 4px; resize: none; outline: none; }
+  </style>
+</head>
+<body>
+
+  <h2>DENON BLACK BOX</h2>
+  <div class="status" id="statusLog">Web MIDI API: Ожидание...</div>
+
+  <button id="connectBtn">1. ПОДКЛЮЧИТЬ MIDI</button>
+  <button id="recBtn" disabled>2. НАЧАТЬ ЗАПИСЬ</button>
+  <button id="stopBtn" style="display: none;">3. СТОП (ПОКАЗАТЬ)</button>
+  <button id="copyBtn" style="display: none;">СКОПИРОВАТЬ ДАМП</button>
+
+  <textarea id="dumpArea" readonly placeholder="Здесь появится расшифровка..."></textarea>
+
+  <script>
+    let midiAccess = null;
+    let isRec = false;
+    let startTime = 0;
+    let memoryStack = [];
+
+    const statusLog = document.getElementById('statusLog');
+    const connectBtn = document.getElementById('connectBtn');
+    const recBtn = document.getElementById('recBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const copyBtn = document.getElementById('copyBtn');
+    const dumpArea = document.getElementById('dumpArea');
+
+    connectBtn.onclick = async () => {
+      try {
+        midiAccess = await navigator.requestMIDIAccess({ sysex: false });
+        let inputsCnt = 0;
+        for (const input of midiAccess.inputs.values()) {
+          inputsCnt++;
+          input.onmidimessage = captureMidi;
+        }
+        statusLog.innerText = `ОК! Подключено портов: ${inputsCnt}`;
+        connectBtn.style.display = 'none';
+        recBtn.disabled = false;
+      } catch (err) {
+        statusLog.innerText = `ОШИБКА ДОСТУПА: ${err.message}`;
+      }
+    };
+
+    recBtn.onclick = () => {
+      memoryStack = [];
+      startTime = performance.now();
+      isRec = true;
+
+      recBtn.innerText = "● ИДЕТ ЗАПИСЬ...";
+      recBtn.classList.add('recording');
+      stopBtn.style.display = 'block';
+      dumpArea.value = "СИСТЕМА ЗАМОРОЖЕНА РАДИ СКОРОСТИ.\n\n1. Сделай движение Деноном.\n2. Нажми кнопку 'СТОП'.";
+    };
+
+    stopBtn.onclick = () => {
+      isRec = false;
+      recBtn.innerText = "ПЕРЕЗАПИСАТЬ";
+      recBtn.classList.remove('recording');
+      stopBtn.style.display = 'none';
+
+      let out = `Всего пакетов в буфере: ${memoryStack.length}\n`;
+      out += `===================================\n`;
+      memoryStack.forEach(p => {
+        const idHex = p.id.toString(16).padStart(2, '0');
+        const valHex = p.val.toString(16).padStart(2, '0');
+        out += `[${p.time}s] stat:${p.stat} | id:${p.id} (0x${idHex}) | val:${p.val} (0x${valHex})\n`;
+      });
+
+      dumpArea.value = out;
+      copyBtn.style.display = 'block';
+      statusLog.innerText = `Готово. Собрано ${memoryStack.length} строк.`;
+    };
+
+    copyBtn.onclick = () => {
+      dumpArea.select();
+      document.execCommand('copy');
+      copyBtn.innerText = "✔ СКОПИРОВАНО В БУФЕР!";
+    };
+
+    function captureMidi(e) {
+      if (!isRec) return;
+      const [stat, id, val] = e.data;
+      if (stat >= 248) return; 
+
+      memoryStack.push({
+        time: ((performance.now() - startTime) / 1000).toFixed(4),
+        stat: stat, id: id, val: val
+      });
+    }
+  </script>
+</body>
+</html>
